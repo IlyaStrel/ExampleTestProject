@@ -1,5 +1,4 @@
-﻿using System.Security.Cryptography.X509Certificates;
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -7,8 +6,9 @@ namespace ExampleTestProject;
 
 internal class Program
 {
-    private static HttpClient _httpClient;
+    private static readonly HttpClient _httpClient;
     private static string _accessToken = string.Empty;
+    private static bool _jsonMode;
     private const string _clientId = "019adada-8f97-7bf5-8e46-2797e0c5f978";
     private const string _clientSecret = "secret";
     private const string _authUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
@@ -25,11 +25,9 @@ internal class Program
                 // В продакшене всегда проверяйте сертификаты
 
                 // Для тестового окружения Сбера можно добавить исключение
-                if (cert?.Issuer?.Contains("Sberbank") == true ||
-                    cert?.Issuer?.Contains("SberDevices") == true)
-                {
+                if (cert?.Issuer?.Contains("Sberbank") == true 
+                    || cert?.Issuer?.Contains("SberDevices") == true)
                     return true;
-                }
 
                 // Для локального тестирования полностью отключаем проверку
                 return true; // ОПАСНО для продакшена!
@@ -63,10 +61,8 @@ internal class Program
         {
             Console.WriteLine($"Ошибка: {ex.Message}");
 
-            if (ex.InnerException != null)
-            {
+            if (ex.InnerException != null) 
                 Console.WriteLine($"Внутренняя ошибка: {ex.InnerException.Message}");
-            }
         }
 
         Console.WriteLine("\nНажмите любую клавишу для выхода...");
@@ -104,11 +100,12 @@ internal class Program
     {
         Console.WriteLine("Чат с GigaChat начат. Введите 'exit' для выхода.");
         Console.WriteLine("Введите 'clear' для очистки истории.");
+        Console.WriteLine("Введите 'json' для включения/выключения режима JSON.");
         Console.WriteLine();
 
         var messages = new List<Message>
         {
-            new Message { Role = "system", Content = "Ты - полезный ассистент" }
+            new() { Role = "system", Content = "Ты - полезный ассистент" }
         };
 
         while (true)
@@ -122,17 +119,24 @@ internal class Program
             if (string.IsNullOrWhiteSpace(userInput))
                 continue;
 
-            if (userInput.ToLower() == "exit")
-                break;
-
-            if (userInput.ToLower() == "clear")
+            // Обработка команд
+            switch (userInput.ToLower())
             {
-                messages = new List<Message>
-                {
-                    new Message { Role = "system", Content = "Ты - полезный ассистент" }
-                };
-                Console.WriteLine("История очищена.\n");
-                continue;
+                case "exit":
+                    return;
+
+                case "clear":
+                    messages = [new Message { Role = "system", Content = "Ты - полезный ассистент" }];
+                    Console.WriteLine("История очищена.\n");
+                    continue;
+
+                case "json":
+                    _jsonMode = !_jsonMode;
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"Режим JSON: {(_jsonMode ? "ВКЛЮЧЕН" : "ВЫКЛЮЧЕН")}");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    continue;
             }
 
             // Добавляем сообщение пользователя
@@ -143,11 +147,22 @@ internal class Program
                 // Получаем ответ от GigaChat
                 var assistantResponse = await GetChatCompletionAsync(messages);
 
-                // Выводим ответ
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.Write("GigaChat: ");
-                Console.ResetColor();
-                Console.WriteLine(assistantResponse);
+                // Выводим ответ в зависимости от режима
+                if (_jsonMode)
+                {
+                    var jsonResponse = FormatAsJson(userInput, assistantResponse);
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("GigaChat (JSON):");
+                    Console.ResetColor();
+                    Console.WriteLine(jsonResponse);
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.Write("GigaChat: ");
+                    Console.ResetColor();
+                    Console.WriteLine(assistantResponse);
+                }
                 Console.WriteLine();
 
                 // Добавляем ответ ассистента в историю
@@ -160,6 +175,24 @@ internal class Program
                 Console.ResetColor();
             }
         }
+    }
+
+    private static string FormatAsJson(string request, string response)
+    {
+        var jsonResponse = new JsonApiResponse
+        {
+            Request = request,
+            Response = response
+        };
+
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+
+        return JsonSerializer.Serialize(jsonResponse, options);
     }
 
     private static async Task<string> GetChatCompletionAsync(List<Message> messages)
@@ -195,6 +228,15 @@ internal class Program
 }
 
 // Модели данных
+public class JsonApiResponse
+{
+    [JsonPropertyName("request")]
+    public string Request { get; set; } = string.Empty;
+
+    [JsonPropertyName("response")]
+    public string Response { get; set; } = string.Empty;
+}
+
 public class AuthResponse
 {
     [JsonPropertyName("access_token")]
@@ -210,7 +252,7 @@ public class ChatRequest
     public string Model { get; set; } = string.Empty;
 
     [JsonPropertyName("messages")]
-    public List<Message> Messages { get; set; } = new List<Message>();
+    public List<Message> Messages { get; set; } = [];
 
     [JsonPropertyName("temperature")]
     public double Temperature { get; set; } = 0.7;
@@ -231,11 +273,11 @@ public class Message
 public class ChatResponse
 {
     [JsonPropertyName("choices")]
-    public List<Choice> Choices { get; set; } = new List<Choice>();
+    public List<Choice> Choices { get; set; } = [];
 }
 
 public class Choice
 {
     [JsonPropertyName("message")]
-    public Message Message { get; set; } = new Message();
+    public Message Message { get; set; } = new();
 }
