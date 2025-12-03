@@ -8,11 +8,28 @@ internal class Program
 {
     private static readonly HttpClient _httpClient;
     private static string _accessToken = string.Empty;
-    private static bool _jsonMode;
+    private static bool _jsonMode = false; // Флаг режима JSON
     private const string _clientId = "019adada-8f97-7bf5-8e46-2797e0c5f978";
     private const string _clientSecret = "secret";
     private const string _authUrl = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
     private const string _apiUrl = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions";
+
+    // JSON промпт для системного сообщения
+    private const string JsonSystemPrompt = @"Ты - полезный ассистент. 
+Всегда отвечай строго в следующем JSON формате:
+{
+    ""request"": ""[ЗДЕСЬ ПОВТОРИ ЗАПРОС ПОЛЬЗОВАТЕЛЯ]"",
+    ""response"": ""[ЗДЕСЬ ТВОЙ ОТВЕТ НА ЗАПРОС]""
+}
+Важные правила:
+1. Ответ должен быть ВАЛИДНЫМ JSON
+2. Не добавляй никакого дополнительного текста кроме JSON
+3. В поле ""request"" дословно повтори запрос пользователя
+4. В поле ""response"" дай полный и развернутый ответ на запрос
+5. Экранируй специальные символы в строках (кавычки, переносы строк и т.д.)
+6. Ответ должен быть на том же языке, что и запрос";
+
+    private const string NormalSystemPrompt = "Ты - полезный ассистент";
 
     static Program()
     {
@@ -25,9 +42,11 @@ internal class Program
                 // В продакшене всегда проверяйте сертификаты
 
                 // Для тестового окружения Сбера можно добавить исключение
-                if (cert?.Issuer?.Contains("Sberbank") == true 
-                    || cert?.Issuer?.Contains("SberDevices") == true)
+                if (cert?.Issuer?.Contains("Sberbank") == true ||
+                    cert?.Issuer?.Contains("SberDevices") == true)
+                {
                     return true;
+                }
 
                 // Для локального тестирования полностью отключаем проверку
                 return true; // ОПАСНО для продакшена!
@@ -61,8 +80,10 @@ internal class Program
         {
             Console.WriteLine($"Ошибка: {ex.Message}");
 
-            if (ex.InnerException != null) 
+            if (ex.InnerException != null)
+            {
                 Console.WriteLine($"Внутренняя ошибка: {ex.InnerException.Message}");
+            }
         }
 
         Console.WriteLine("\nНажмите любую клавишу для выхода...");
@@ -105,7 +126,7 @@ internal class Program
 
         var messages = new List<Message>
         {
-            new() { Role = "system", Content = "Ты - полезный ассистент" }
+            new Message { Role = "system", Content = NormalSystemPrompt }
         };
 
         while (true)
@@ -126,14 +147,33 @@ internal class Program
                     return;
 
                 case "clear":
-                    messages = [new Message { Role = "system", Content = "Ты - полезный ассистент" }];
+                    messages =
+                    [
+                        new Message { Role = "system", Content = _jsonMode ? JsonSystemPrompt : NormalSystemPrompt }
+                    ];
                     Console.WriteLine("История очищена.\n");
                     continue;
 
                 case "json":
                     _jsonMode = !_jsonMode;
+
+                    // Обновляем системный промпт
+                    messages[0] = new Message
+                    {
+                        Role = "system",
+                        Content = _jsonMode ? JsonSystemPrompt : NormalSystemPrompt
+                    };
+
+                    // Если есть история сообщений, перестраиваем ее с новым системным промптом
+                    if (messages.Count > 1)
+                    {
+                        var historyMessages = messages.Skip(1).ToList();
+                        messages = [messages[0]];
+                        messages.AddRange(historyMessages);
+                    }
+
                     Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"Режим JSON: {(_jsonMode ? "ВКЛЮЧЕН" : "ВЫКЛЮЧЕН")}");
+                    Console.WriteLine($"Режим JSON: {(_jsonMode ? "ВКЛЮЧЕН (ответы в JSON формате)" : "ВЫКЛЮЧЕН (обычный режим)")}");
                     Console.ResetColor();
                     Console.WriteLine();
                     continue;
@@ -147,22 +187,13 @@ internal class Program
                 // Получаем ответ от GigaChat
                 var assistantResponse = await GetChatCompletionAsync(messages);
 
-                // Выводим ответ в зависимости от режима
-                if (_jsonMode)
-                {
-                    var jsonResponse = FormatAsJson(userInput, assistantResponse);
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("GigaChat (JSON):");
-                    Console.ResetColor();
-                    Console.WriteLine(jsonResponse);
-                }
-                else
-                {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.Write("GigaChat: ");
-                    Console.ResetColor();
-                    Console.WriteLine(assistantResponse);
-                }
+                // Обрабатываем ответ в зависимости от режима
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("GigaChat: ");
+                Console.ResetColor();
+                Console.WriteLine(assistantResponse);
+
                 Console.WriteLine();
 
                 // Добавляем ответ ассистента в историю
@@ -173,26 +204,11 @@ internal class Program
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Ошибка: {ex.Message}");
                 Console.ResetColor();
+
+                // При ошибке удаляем последнее сообщение пользователя из истории
+                messages.RemoveAt(messages.Count - 1);
             }
         }
-    }
-
-    private static string FormatAsJson(string request, string response)
-    {
-        var jsonResponse = new JsonApiResponse
-        {
-            Request = request,
-            Response = response
-        };
-
-        var options = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-        };
-
-        return JsonSerializer.Serialize(jsonResponse, options);
     }
 
     private static async Task<string> GetChatCompletionAsync(List<Message> messages)
@@ -208,7 +224,7 @@ internal class Program
         {
             Model = "GigaChat",
             Messages = messages,
-            Temperature = 0.7,
+            Temperature = _jsonMode ? 0.3 : 0.7, // Ниже температура для более структурированных ответов в JSON режиме
             MaxTokens = 1024
         };
 
@@ -228,15 +244,6 @@ internal class Program
 }
 
 // Модели данных
-public class JsonApiResponse
-{
-    [JsonPropertyName("request")]
-    public string Request { get; set; } = string.Empty;
-
-    [JsonPropertyName("response")]
-    public string Response { get; set; } = string.Empty;
-}
-
 public class AuthResponse
 {
     [JsonPropertyName("access_token")]
